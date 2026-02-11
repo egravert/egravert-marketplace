@@ -1,0 +1,9 @@
+{
+  "name": "go-hexagonal",
+  "version": "1.0.0",
+  "description": "Opinionated guide for building Go applications using hexagonal (ports and adapters) architecture",
+  "author": {
+    "name": "egravert"
+  },
+  "keywords": ["go", "golang", "hexagonal", "architecture", "ports-and-adapters", "clean-architecture"]
+}

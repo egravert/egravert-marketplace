@@ -1,0 +1,9 @@
+{
+  "name": "fossil-scm",
+  "version": "1.0.0",
+  "description": "Comprehensive Fossil SCM command reference and workflow guidance for Claude Code",
+  "author": {
+    "name": "egravert"
+  },
+  "keywords": ["fossil", "scm", "version-control", "dvcs", "ticketing"]
+}

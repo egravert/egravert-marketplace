@@ -1,0 +1,16 @@
+{
+  "name": "egravert-marketplace",
+  "owner": {"name": "Eric Gravert"},
+  "plugins": [
+    {
+      "name": "fossil-scm",
+      "source": "./fossil-scm",
+      "description": "Comprehensive Fossil SCM command reference and workflow guidance. Use this skill when the user runs fossil commands, works with Fossil repositories, asks about fossil commit, branch, merge, sync, stash, timeline, or ticketing workflows, or needs help with Fossil vs Git differences."
+    },
+    {
+      "name": "go-hexagonal",
+      "source": "./go-hexagonal",
+      "description": "Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following hexagonal/ports-and-adapters architecture with clean separation between domain, service, storage, and interface layers."
+    }
+  ]
+}

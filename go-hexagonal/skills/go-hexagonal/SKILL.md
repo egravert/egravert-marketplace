@@ -1,12 +1,12 @@
 ---
-name: Go Hexagonal Architecture
-description: Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following hexagonal/ports-and-adapters architecture with clean separation between domain, service, storage, and interface layers.
-version: 1.0.0
+name: Go Layered Architecture
+description: Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following a pragmatic layered architecture with clean separation between domain, service, storage, and interface layers.
+version: 1.1.0
 ---
 
-# Go Hexagonal Architecture
+# Go Layered Architecture
 
-Opinionated guide for building Go applications using hexagonal (ports and adapters) architecture. Dependencies flow inward toward the domain core. Each layer has clear responsibilities and boundaries.
+Opinionated, pragmatic guide for building Go applications using a layered architecture inspired by hexagonal (ports and adapters) principles. This is not a pure hexagonal implementation — it intentionally flattens the ports-and-adapters model into a straightforward layered structure where dependencies flow inward toward the domain core. The goal is clarity and navigability over architectural purity: each layer has clear responsibilities and boundaries without the extra indirection that strict hexagonal architecture introduces.
 
 ## Dependency Flow
 

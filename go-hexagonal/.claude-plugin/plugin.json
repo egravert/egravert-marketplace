@@ -1,7 +1,7 @@
 {
   "name": "go-hexagonal",
   "version": "1.0.0",
-  "description": "Opinionated guide for building Go applications using hexagonal (ports and adapters) architecture",
+  "description": "Opinionated guide for building Go applications using a pragmatic layered architecture inspired by hexagonal principles",
   "author": {
     "name": "egravert"
   },

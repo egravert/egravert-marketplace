@@ -11,6 +11,11 @@
       "name": "go-hexagonal",
       "source": "./go-hexagonal",
       "description": "Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following hexagonal/ports-and-adapters architecture with clean separation between domain, service, storage, and interface layers."
+    },
+    {
+      "name": "agentic-practices",
+      "source": "./agentic-practices",
+      "description": "Install agentic engineering practices into a project's CLAUDE.md. Use this skill when the user asks to install agentic practices, set up coding standards for AI agents, or runs /agentic-practices. This is a user-invoked skill — do not activate automatically."
     }
   ]
 }

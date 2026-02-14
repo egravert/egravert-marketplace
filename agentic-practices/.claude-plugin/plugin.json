@@ -1,0 +1,9 @@
+{
+  "name": "agentic-practices",
+  "version": "1.0.0",
+  "description": "Installs agentic engineering practices into a project's CLAUDE.md as permanent coding standards",
+  "author": {
+    "name": "egravert"
+  },
+  "keywords": ["agentic", "ai", "practices", "installer", "claude-md", "coding-standards"]
+}

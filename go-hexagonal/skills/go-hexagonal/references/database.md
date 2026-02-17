@@ -112,16 +112,22 @@ goose -dir db/migrations create add_boardgame sql
 
 ### Migration Format
 
+Every migration should document **why** the change is being made — not just the DDL. Column-level comments explain the purpose of non-obvious columns and data format choices.
+
 ```sql
 -- +goose Up
+-- Boardgame is the core entity. Players can track games they own or have played.
+-- This is the initial schema — future migrations add sessions and reviews.
 -- +goose StatementBegin
 CREATE TABLE boardgame (
-    id               INTEGER PRIMARY KEY,
+    id               INTEGER PRIMARY KEY,  -- SQLite rowid alias; auto-increments
     name             TEXT NOT NULL,
-    min_players      INTEGER,
-    max_players      INTEGER,
-    complexity       INTEGER,
+    min_players      INTEGER,              -- nullable: not all games have known player counts
+    max_players      INTEGER,              -- paired with min_players; both null or both set
+    complexity       INTEGER,              -- 1-5 scale; null means unrated
     description      TEXT NOT NULL DEFAULT '',
+    -- Players are a range: you can't have a max without a min (or vice versa).
+    -- The CHECK enforces both-or-neither semantics at the DB level.
     CHECK ((min_players IS NULL AND max_players IS NULL) OR
            (min_players IS NOT NULL AND max_players IS NOT NULL AND max_players >= min_players)),
     CHECK (complexity IS NULL OR (complexity >= 1 AND complexity <= 5))
@@ -141,6 +147,8 @@ DROP TABLE IF EXISTS boardgame;
 - Nullable column pairs (min/max) should have CHECK constraints ensuring both-or-neither
 - Always include `-- +goose Down` for rollback
 - Use `-- +goose StatementBegin/End` for multi-statement blocks
+- Document the motivation for each migration, not just the DDL
+- Document data format choices at point of use (e.g., "dates stored as RFC3339 TEXT because SQLite has no native datetime type")
 
 ### Running Migrations
 
@@ -274,19 +282,18 @@ func toNullInt64[T ~int64 | ~uint8](o domain.Optional[T]) sql.NullInt64 {
 
 ### Complex Type Serialization
 
-For types that don't map to a single column (e.g., `[]string`), use simple serialization:
+For types that don't map to a single column (e.g., `[]string`), use simple serialization. Document format choices at the point of use so future readers understand why:
 
 ```go
-// Store []string as CSV
+// Players stored as comma-separated TEXT because SQLite has no array type
+// and player lists are small (typically 2-6 names). JSON would work but
+// adds parsing overhead for a simple list.
 params.Players = strings.Join(session.Players, ",")
-
-// Retrieve CSV as []string
 session.Players = strings.Split(result.Players, ",")
 
-// Store time.Time as RFC3339 string
+// Dates stored as RFC3339 TEXT because SQLite has no native datetime type.
+// RFC3339 sorts lexicographically, which preserves ORDER BY correctness.
 params.PlayedAt = session.PlayedAt.Format(time.RFC3339)
-
-// Retrieve RFC3339 string as time.Time
 playedAt, err := time.Parse(time.RFC3339, result.PlayedAt)
 ```
 

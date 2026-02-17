@@ -12,10 +12,12 @@ Opinionated, pragmatic guide for building Go applications using a layered archit
 
 ```
 Interface (CLI/TUI/Web) → Service → Domain ← Storage
+                                      ↑
+                                   Adapters (external APIs)
 ```
 
-- **Domain** defines interfaces (ports). Storage implements them (adapters).
-- Services depend on domain interfaces, never on concrete storage.
+- **Domain** defines interfaces (ports). Storage and external client adapters implement them.
+- Services depend on domain interfaces, never on concrete storage or external client packages.
 - Interface layers depend on services, never on storage or domain internals.
 
 ## Directory Structure
@@ -27,10 +29,11 @@ project/
 │   ├── tui/          # bubbletea entry point
 │   └── web/          # chi router entry point
 ├── internal/
-│   ├── domain/       # Entities, value objects, repository interfaces
+│   ├── domain/       # Entities, value objects, repository + client interfaces
 │   ├── service/      # Business logic, validation, orchestration
 │   ├── storage/      # Repository implementations (wraps sqlc)
 │   │   └── db/       # sqlc-generated code (do not edit)
+│   ├── <client>/     # External API adapters (e.g., bgg/, stripe/)
 │   ├── cli/          # CLI command handlers
 │   ├── tui/          # Bubbletea models and views
 │   └── web/          # Chi handlers, middleware, templates
@@ -107,7 +110,7 @@ func (o Optional[T]) OrElse(v T) T { if o.ok { return o.value }; return v }
 
 ### Repository Interfaces
 
-Defined in domain — pure interfaces with no generation directives:
+Defined in domain — not at point of consumption. Repository interfaces are the shared contract between service (consumer) and storage (implementor). Both layers depend inward on domain; neither should import the other. Moving these to the service package would force `Storage → Service`, breaking the dependency flow.
 
 ```go
 type BoardgameRepository interface {
@@ -120,6 +123,43 @@ type BoardgameRepository interface {
 - `Create` returns the entity with server-generated fields (ID) populated
 - Keep interfaces narrow (2-4 methods) — this makes hand-written test fakes trivial
 - Test doubles are hand-written inline in test files, not generated (see `references/testing.md`)
+
+### External Client Interfaces
+
+The same dependency inversion pattern applies to **any** external dependency the service needs — not just databases. When a service calls an external API (e.g., BoardGameGeek, Stripe, a weather service), define the interface in domain using domain types. The external client lives behind an adapter that translates between the API's types and domain types.
+
+```go
+// internal/domain/game_lookup.go
+// GameLookup searches an external catalog for boardgame metadata.
+// The service depends on this interface; the BGG adapter implements it.
+type GameLookup interface {
+    SearchGames(ctx context.Context, query string) ([]Boardgame, error)
+    GetGameDetails(ctx context.Context, externalID string) (Boardgame, error)
+}
+```
+
+The adapter wraps the external client and translates its types into domain types — the same pattern as storage repositories:
+
+```go
+// internal/bgg/adapter.go
+type Adapter struct {
+    client *bgg.Client
+}
+
+func (a *Adapter) SearchGames(ctx context.Context, query string) ([]domain.Boardgame, error) {
+    results, err := a.client.Search(ctx, query)
+    if err != nil {
+        return nil, fmt.Errorf("searching BGG for %q: %w", query, err)
+    }
+    games := make([]domain.Boardgame, len(results))
+    for i, r := range results {
+        games[i] = gameFromBGGResult(r)
+    }
+    return games, nil
+}
+```
+
+Without this pattern, the service imports the external client's types directly, coupling business logic to a specific API. The adapter keeps the service testable (fake the domain interface) and swappable (replace BGG with another catalog).
 
 ## Service Layer
 
@@ -148,6 +188,7 @@ func NewBoardGameService(repo domain.BoardgameRepository, logger *slog.Logger) *
 - Import any framework package (urfave, chi, bubbletea)
 - Know about HTTP, CLI flags, or UI concerns
 - Import sqlc-generated types or database/sql
+- Import external client packages directly (use domain interfaces + adapters)
 - Handle serialization (JSON, HTML, etc.)
 
 ## Storage Layer
@@ -181,18 +222,20 @@ Each interface (CLI, TUI, Web) is a thin adapter. It parses input, calls service
 
 ### Interface Segregation
 
-Handlers define **narrow interfaces** matching only what they need:
+Handlers define **narrow interfaces** at point of consumption — in the handler file or its test file, not in a shared package:
 
 ```go
-// In web handler — NOT the full service interface
+// internal/web/handlers/boardgame_handler.go
 type BoardGameService interface {
     ListGames(context.Context) ([]domain.Boardgame, error)
     FindGame(context.Context, int64) (domain.Boardgame, error)
-    AddGame(ctx context.Context, bg domain.Boardgame) (domain.Boardgame, err error)
+    AddGame(ctx context.Context, bg domain.Boardgame) (domain.Boardgame, error)
 }
 ```
 
 This enables focused testing — fakes only need to implement the methods the handler actually uses.
+
+**Why this differs from repository interfaces:** Handler → Service is a one-directional dependency — no third party implements the interface across a layer boundary. Repository interfaces live in domain because they're a shared contract between service (consumer) and storage (implementor), enabling dependency inversion. Service interfaces for handlers have no such constraint.
 
 ### Error Handling by Layer
 

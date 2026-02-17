@@ -1,7 +1,7 @@
 ---
 name: Go Layered Architecture
 description: Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following a pragmatic layered architecture with clean separation between domain, service, storage, and interface layers.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Go Layered Architecture
@@ -28,7 +28,6 @@ project/
 │   └── web/          # chi router entry point
 ├── internal/
 │   ├── domain/       # Entities, value objects, repository interfaces
-│   │   └── testing/  # moq-generated test doubles
 │   ├── service/      # Business logic, validation, orchestration
 │   ├── storage/      # Repository implementations (wraps sqlc)
 │   │   └── db/       # sqlc-generated code (do not edit)
@@ -44,7 +43,7 @@ project/
 
 ## Domain Layer
 
-The domain layer is the innermost ring. It has **zero external dependencies** — no framework imports, no struct tags, no database concerns.
+The domain layer is the innermost ring. It has **zero external dependencies** — no framework imports, no struct tags, no database concerns. Include a `doc.go` with a glossary of key business concepts so that new contributors (human or agent) can understand the domain language.
 
 ### Entities
 
@@ -108,11 +107,9 @@ func (o Optional[T]) OrElse(v T) T { if o.ok { return o.value }; return v }
 
 ### Repository Interfaces
 
-Defined in domain with `go:generate` directives for moq:
+Defined in domain — pure interfaces with no generation directives:
 
 ```go
-//go:generate moq -out testing/boardgame_repository_moq.go . BoardgameRepository
-
 type BoardgameRepository interface {
     Create(ctx context.Context, game Boardgame) (Boardgame, error)
     GetByID(ctx context.Context, id int64) (Boardgame, error)
@@ -120,9 +117,9 @@ type BoardgameRepository interface {
 }
 ```
 
-- Every repository interface gets a `//go:generate moq` directive
-- Generated mocks go into `domain/testing/` subdirectory
 - `Create` returns the entity with server-generated fields (ID) populated
+- Keep interfaces narrow (2-4 methods) — this makes hand-written test fakes trivial
+- Test doubles are hand-written inline in test files, not generated (see `references/testing.md`)
 
 ## Service Layer
 
@@ -195,15 +192,15 @@ type BoardGameService interface {
 }
 ```
 
-This enables focused testing — mocks only need to implement the methods the handler actually uses.
+This enables focused testing — fakes only need to implement the methods the handler actually uses.
 
 ### Error Handling by Layer
 
 | Layer | Pattern |
 |-------|---------|
 | Domain | Return `error` from constructors when invariants fail |
-| Service | Validate inputs, wrap repository errors with `fmt.Errorf("context: %w", err)` |
-| Storage | Wrap database errors with operation context: `fmt.Errorf("getting game %d: %w", id, err)` |
+| Service | Validate inputs, wrap errors with identifying context: `fmt.Errorf("adding session for game %d: %w", gameID, err)` |
+| Storage | Wrap database errors with operation and entity context: `fmt.Errorf("getting game %d: %w", id, err)` |
 | Web | Map errors to HTTP status codes (400/404/500), log with `slog.Error` |
 | CLI | Map errors to user-facing messages and exit codes |
 
@@ -211,27 +208,69 @@ This enables focused testing — mocks only need to implement the methods the ha
 
 Standards that apply across all layers for consistency and correctness.
 
-### Error Handling
+### Comments
 
-Always wrap errors with context using `fmt.Errorf` and the `%w` verb. The message should describe the operation that failed:
+Write comments that explain **why**, not **what**. Never describe what code does — agents and humans can read the code. Instead, document:
+
+- Why this approach was chosen over alternatives
+- What constraints or invariants the code operates under
+- What assumptions are safe to make
+- Intentional duplication (explain why, or agents will refactor it into a shared abstraction)
 
 ```go
-// Good — adds context about what was happening when the error occurred
-return domain.Review{}, fmt.Errorf("adding review: %w", err)
+// Bad — describes what the code does
+// GetOrder retrieves an order by ID from the database
+
+// Good — explains the design decision
+// GetOrder retrieves an order and its full item tree. Items are denormalized
+// at placement time because menu item IDs are unstable across published
+// versions — we cannot look them up later.
+```
+
+### Package Documentation
+
+Every package should have a `doc.go` explaining its purpose, key concepts, and important design decisions. Domain packages should include a glossary of business terms:
+
+```go
+// Package domain defines the core business entities for a boardgame tracker.
+//
+// Glossary:
+//   - Boardgame: a tabletop game with metadata (player count, complexity)
+//   - Session: a recorded play of a boardgame with players and date
+//   - Play: alias for Session in user-facing contexts
+package domain
+```
+
+### Error Handling
+
+Always wrap errors with enough context to trace causation — include relevant IDs and values, not just the operation name:
+
+```go
+// Good — an agent or operator can trace this immediately
+return domain.Session{}, fmt.Errorf(
+    "creating session for game %d with %d players: %w", gameID, len(players), err)
+
+// Good — includes the conflicting value
+return domain.Boardgame{}, fmt.Errorf(
+    "game name %q already exists: %w", game.Name, err)
 
 // Bad — bare error with no context for debugging
 return domain.Review{}, err
 
-// Bad — redundant "error" prefix adds nothing
-return domain.Review{}, fmt.Errorf("error: %w", err)
+// Bad — operation name only, no identifying information
+return domain.Review{}, fmt.Errorf("adding review: %w", err)
 ```
 
 Each layer adds its own context. A fully wrapped error reads as a chain of operations:
 
 ```
-creating review: adding review to db: UNIQUE constraint failed
-└── service        └── repository       └── database
+creating session for game 42 with 3 players: inserting session: UNIQUE constraint failed
+└── service                                  └── repository       └── database
 ```
+
+### Greppability
+
+Use unique, specific names that can be found with a single search. Prefer `GameStatusUnplayed` over `Unplayed`, `OrderMatchScore` over `Score`. If a function is called, there must be a greppable call site — avoid string-based dispatch and dynamic method resolution.
 
 ### Slice Return Conventions
 
@@ -305,29 +344,30 @@ Use **slog** (standard library) throughout:
 1. Define domain entities in `internal/domain/` (pure Go structs)
 2. Create migration in `db/migrations/`
 3. Write SQL queries in `db/queries/` with sqlc annotations
-4. Add repository interface to `internal/domain/` with `//go:generate moq`
-5. Run `go generate ./...` (generates sqlc code + moq doubles)
+4. Add repository interface to `internal/domain/`
+5. Run `go generate ./...` (generates sqlc code)
 6. Implement repository in `internal/storage/` (wrap sqlc, translate types)
 7. Write repository integration tests with `:memory:` SQLite
 8. Implement business logic in `internal/service/`
-9. Write service unit tests using moq doubles
-10. Add handlers in `internal/cli/`, `internal/tui/`, or `internal/web/`
-11. Write handler tests using moq doubles for the service interface
-12. Wire dependencies in `cmd/*/main.go`
+9. Add handlers in `internal/cli/`, `internal/tui/`, or `internal/web/`
+10. Define narrow service interface at point of consumption (handler or handler test file)
+11. Write handler tests with hand-written inline fakes for the service interface
+12. Write service unit tests only if business logic is complex enough to warrant isolation from handler tests
+13. Wire dependencies in `cmd/*/main.go`
 
 ## Code Generation
 
 ```bash
-go generate ./...    # Runs both sqlc and moq
+go generate ./...    # Runs sqlc
 sqlc generate        # SQL queries only
 ```
 
-All generated code lives in clearly separated directories (`storage/db/`, `domain/testing/`) and must never be manually edited.
+All generated code lives in `internal/storage/db/` and must never be manually edited.
 
 ## Reference Files
 
 - **`references/packages.md`** — Detailed usage patterns for each package (urfave/cli, chi, bubbletea, koanf, slog, templ, HTMX)
-- **`references/testing.md`** — Testing strategy, moq patterns, testify usage, integration vs unit test structure
+- **`references/testing.md`** — Testing strategy, hand-written fakes, testify usage, handler-first test structure
 - **`references/database.md`** — sqlc workflow, goose migrations, repository translation patterns, SQL conventions
 
 Consult reference files for package-specific syntax and detailed examples.

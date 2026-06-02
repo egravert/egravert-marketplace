@@ -186,6 +186,11 @@ Always wrap errors with operation context. Return `nil` for slices on error, zer
 func (r *BoardgameRepository) GetByID(ctx context.Context, id int64) (domain.Boardgame, error) {
     result, err := r.queries.GetBoardgameByID(ctx, id)
     if err != nil {
+        // Translate the driver's "no rows" into the domain sentinel so callers can
+        // branch on errors.Is(err, domain.ErrNotFound) without importing database/sql.
+        if errors.Is(err, sql.ErrNoRows) {
+            return domain.Boardgame{}, fmt.Errorf("getting boardgame %d: %w", id, domain.ErrNotFound)
+        }
         return domain.Boardgame{}, fmt.Errorf("getting boardgame %d: %w", id, err)
     }
     return gameFromResult(result), nil
@@ -211,6 +216,133 @@ func (r *BoardgameRepository) List(ctx context.Context) ([]domain.Boardgame, err
     return games, nil
 }
 ```
+
+---
+
+## Transactions
+
+When a single operation must write to **more than one aggregate atomically** (e.g. create a user *and* mark their invitation used), neither the service nor an individual repository can own the transaction alone. The service owns the invariant but must not import `database/sql`; the repository knows the database but only sees its own aggregate. The seam is a **scoped repository bundle** defined in domain and a transaction manager in storage.
+
+### Scoped Repository Bundle (domain port)
+
+Define a narrow interface listing *only* the repositories that participate together — not a god `Repositories` interface. The bundle names exactly which aggregates can be written atomically together, keeping the transactional surface honest:
+
+```go
+// internal/domain/transactor.go
+
+// RegistrationRepos is the set of repositories that participate together in one
+// transaction to create a user and consume their invitation as a single unit.
+type RegistrationRepos interface {
+    Users() UserRepository
+    Invitations() InvitationRepository
+}
+```
+
+A second multi-aggregate operation gets its *own* bundle (e.g. `CheckoutRepos`) rather than widening this one. Narrow bundles make it obvious at a glance which writes are coupled.
+
+### Transaction Manager (storage)
+
+The manager begins a `*sql.Tx`, binds repositories to it via `db.New(tx)`, runs the caller's closure, and commits or rolls back as one unit. This is the **only** place the multi-aggregate transaction boundary lives:
+
+```go
+// internal/storage/tx.go
+
+type TxManager struct {
+    db     *sql.DB
+    logger *slog.Logger
+}
+
+func NewTxManager(db *sql.DB, logger *slog.Logger) *TxManager {
+    return &TxManager{db: db, logger: logger}
+}
+
+// RunRegistrationTx runs fn inside a single database transaction, passing it
+// tx-bound repositories whose writes commit or roll back as one unit. A non-nil
+// return from fn rolls the whole transaction back.
+//
+// INVARIANT: fn must perform only local repository writes. Never make a network
+// or filesystem call inside fn. The transaction holds SQLite's single global
+// write lock for the lifetime of the closure, so any slow call inside it
+// serializes every writer in the application until fn returns.
+func (m *TxManager) RunRegistrationTx(ctx context.Context, fn func(domain.RegistrationRepos) error) error {
+    tx, err := m.db.BeginTx(ctx, nil)
+    if err != nil {
+        return fmt.Errorf("beginning transaction: %w", err)
+    }
+    defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds; fires on any early return
+
+    // db.New(tx) binds a *Queries to the transaction — sqlc's *Queries accepts
+    // *sql.Tx through its DBTX interface, so both repos below share one tx and
+    // their writes commit or roll back together.
+    qtx := db.New(tx)
+    repos := &registrationRepos{
+        users:       NewUserRepository(qtx),
+        invitations: NewInvitationRepository(qtx, m.logger),
+    }
+
+    if err := fn(repos); err != nil {
+        return err
+    }
+    return tx.Commit()
+}
+
+// registrationRepos is the transactional implementation of
+// domain.RegistrationRepos. Each accessor returns a repo already bound to the tx.
+type registrationRepos struct {
+    users       domain.UserRepository
+    invitations domain.InvitationRepository
+}
+
+func (r *registrationRepos) Users() domain.UserRepository             { return r.users }
+func (r *registrationRepos) Invitations() domain.InvitationRepository { return r.invitations }
+```
+
+`db.New(tx)` is the linchpin: sqlc's generated `*Queries` accepts a `*sql.Tx` through its `DBTX` interface, so a tx-bound repository is just `NewUserRepository(db.New(tx))` — no separate "transactional repository" type is needed.
+
+### Calling It From a Service
+
+The service that owns the invariant holds the `*TxManager` (or, better for testing, a narrow interface over it) and drives the closure. Keep expensive work **outside** the closure:
+
+```go
+func (s *UserService) Register(ctx context.Context, email, password, inviteCode string) (domain.User, error) {
+    // Slow work runs BEFORE the transaction. bcrypt, validation reads, network,
+    // and filesystem calls must never run inside the write lock.
+    hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+    if err != nil {
+        return domain.User{}, fmt.Errorf("hashing password for %q: %w", email, err)
+    }
+
+    var created domain.User
+    err = s.tx.RunRegistrationTx(ctx, func(repos domain.RegistrationRepos) error {
+        u, err := repos.Users().Create(ctx, domain.User{Email: email, PasswordHash: hash})
+        if err != nil {
+            return fmt.Errorf("creating user %q: %w", email, err)
+        }
+        // Bare write with no business rules → call the repo directly in the closure.
+        if err := repos.Invitations().Use(ctx, inviteCode, u.ID); err != nil {
+            return fmt.Errorf("consuming invitation %q: %w", inviteCode, err)
+        }
+        created = u
+        return nil
+    })
+    return created, err
+}
+```
+
+### Decision Rules
+
+What goes *inside* the closure depends on whether the inner write carries business rules:
+
+| Inner operation | Where it goes |
+|-----------------|---------------|
+| **Bare write, no rules** | Call the repository directly in the closure (as `Invitations().Use` above) |
+| **Real business rules** (validation, counters, audit) | Add a transaction-agnostic `XxxTx(ctx, repo, ...)` method on the owning service that operates on the *passed* repo, and call it from the closure |
+
+The `XxxTx` seam (see SKILL.md, "Transaction-Agnostic Service Methods") lets the same business logic run standalone *or* inside another service's transaction, without that logic ever knowing whether it's in a transaction.
+
+### Rejected: Context-Propagated Transactions
+
+A common alternative hides the `*sql.Tx` inside `ctx` and has repositories pull it out transparently. **Avoid it.** The transaction boundary becomes invisible at the call site, which makes it easy for slow IO to sneak inside the write lock — the exact failure the `INVARIANT` comment guards against. An explicit closure makes the boundary, and everything running under the lock, impossible to miss.
 
 ---
 

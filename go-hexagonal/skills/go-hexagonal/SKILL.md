@@ -1,7 +1,7 @@
 ---
 name: Go Layered Architecture
 description: Use this skill when working on Go projects, creating new Go services, adding features to Go applications, designing Go package structure, implementing repository patterns, structuring layered Go architectures, or discussing Go application design. Applies to any Go development following a pragmatic layered architecture with clean separation between domain, service, storage, and interface layers.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Go Layered Architecture
@@ -108,6 +108,17 @@ func (o Optional[T]) Value() T    { return o.value }
 func (o Optional[T]) OrElse(v T) T { if o.ok { return o.value }; return v }
 ```
 
+### Sentinel Errors
+
+Define sentinel errors in domain for conditions every layer must distinguish — most importantly "not found". Storage translates driver errors into these sentinels; handlers map them to interface-specific responses. This keeps `database/sql` out of the service and interface layers:
+
+```go
+// internal/domain/errors.go
+var ErrNotFound = errors.New("not found")
+```
+
+Storage translates `sql.ErrNoRows` into `domain.ErrNotFound` (see `references/database.md`); web handlers branch on `errors.Is(err, domain.ErrNotFound)` to return 404 vs 500 (see `references/packages.md`). Without the sentinel, "not found" and "server error" collapse into a single opaque error and the interface layer can't tell them apart.
+
 ### Repository Interfaces
 
 Defined in domain — not at point of consumption. Repository interfaces are the shared contract between service (consumer) and storage (implementor). Both layers depend inward on domain; neither should import the other. Moving these to the service package would force `Storage → Service`, breaking the dependency flow.
@@ -190,6 +201,28 @@ func NewBoardGameService(repo domain.BoardgameRepository, logger *slog.Logger) *
 - Import sqlc-generated types or database/sql
 - Import external client packages directly (use domain interfaces + adapters)
 - Handle serialization (JSON, HTML, etc.)
+
+### Transaction-Agnostic Service Methods
+
+When inner work in a multi-aggregate transaction carries real business rules (validation, counters, audit) — not just a bare write — factor that logic into a method that **operates on a repository passed in**, rather than the service's own field. The method then runs identically whether called standalone or inside another service's transaction closure, and never needs to know which:
+
+```go
+// ConsumeTx enforces invitation rules (max-uses, expiry) against the supplied
+// repo. The caller decides whether that repo is tx-bound; this method does not
+// know or care, which is exactly why it composes inside RunRegistrationTx.
+func (s *InvitationService) ConsumeTx(ctx context.Context, repo domain.InvitationRepository, code string, userID int64) error {
+    inv, err := repo.GetByCode(ctx, code)
+    if err != nil {
+        return fmt.Errorf("loading invitation %q: %w", code, err)
+    }
+    if inv.Uses >= inv.MaxUses {
+        return fmt.Errorf("invitation %q exhausted: %w", code, ErrInvitationExhausted)
+    }
+    return repo.Use(ctx, code, userID)
+}
+```
+
+The owning service exposes a normal `Consume(ctx, ...)` wrapper that supplies its own repo for standalone use, and the tx-driving service calls `ConsumeTx(ctx, repos.Invitations(), ...)` inside its closure. **Owner of the invariant owns the transaction; services parameterize over their store so the transaction owner can inject a tx-bound repo.** See `references/database.md`, "Transactions", for the full pattern and the decision rule on when a closure needs a `XxxTx` method versus a bare repo write.
 
 ## Storage Layer
 

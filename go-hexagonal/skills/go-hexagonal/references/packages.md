@@ -228,7 +228,14 @@ func (h *GameHandler) ShowGame(w http.ResponseWriter, r *http.Request) {
 
     game, err := h.games.FindGame(r.Context(), id)
     if err != nil {
-        http.Error(w, "Game Not Found", http.StatusNotFound)
+        // Branch on the domain sentinel so a missing game is 404 and a real
+        // failure is 500 — the client must distinguish them.
+        if errors.Is(err, domain.ErrNotFound) {
+            http.Error(w, "Game Not Found", http.StatusNotFound)
+            return
+        }
+        h.logger.Error("finding game", "id", id, "error", err)
+        http.Error(w, "Internal Server Error", http.StatusInternalServerError)
         return
     }
 

@@ -5,9 +5,9 @@ An opinionated guide for building Go applications using hexagonal (ports and ada
 ## Features
 
 - Layered architecture patterns with clear dependency flow
-- Domain-driven design: entities, value objects, repository interfaces
-- sqlc + goose database workflow with type translation patterns
-- Three-tier testing strategy using moq and testify
+- Domain-driven design: entities, value objects, repository interfaces, sentinel errors
+- sqlc + goose database workflow with type translation and cross-aggregate transaction patterns
+- Three-tier testing strategy using hand-written inline fakes and testify
 - Package usage patterns for urfave/cli, chi, bubbletea, koanf, templ, and HTMX
 
 ## Usage
@@ -25,11 +25,11 @@ The skill activates automatically when you:
 skills/go-hexagonal/
 ├── SKILL.md                    # Architecture patterns and conventions
 └── references/
-    ├── database.md             # sqlc workflow, migrations, type translation
+    ├── database.md             # sqlc workflow, migrations, type translation, transactions
     ├── packages.md             # Package-specific usage patterns
-    └── testing.md              # Testing strategy, moq, testify patterns
+    └── testing.md              # Testing strategy, hand-written fakes, testify patterns
 ```
 
 ## Version
 
-1.2.0
+1.3.0
